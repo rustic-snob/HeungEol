@@ -66,7 +66,7 @@ class Dataloader(pl.LightningDataModule):
         x['freq'] = [len(self.tokenizer(text)['input_ids']) for text in tqdm(x.gen_lyrics)]
         x = x[x['freq'] <= 300]
         
-        instruction = "다음 조건에 어울리는 가사를 생성하시오. 주어진 음절 수를 절대 벗어나지 말 것. 제목과 장르에 어울려야 할 것. 생성 형식은 ['가사 / 가사 / 가사 / 가사']와 같음."
+        instruction = "다음 조건에 어울리는 가사를 생성하시오. 주어진 음절 수를 절대 벗어나지 말 것. 제목과 장르에 어울려야 할 것. 생성 형식은 [가사 / 가사 / 가사 / 가사]와 같음."
         x['instruction'] = instruction
         
         prompts_list = [f"### Instruction(명령어):\n{row['instruction']}\n\n### Input(입력):\n음절 수는 [{row['gen_notes']}], 제목은 [{row['제목']}], 장르는 [{row['장르']}]이다.\n\n### Response(응답): \n" for _ , row in x.iterrows()]

@@ -16,15 +16,17 @@ class Dataset(Dataset):
     """
 
     def __init__(self, data, train=False):
-        self.inputs = data
+        self.inputs = data[0]
+        self.syl_structure = data[1]
         self.train = train
 
     def __getitem__(self, idx):
         if self.train:
             inputs = {key: val[idx].clone().detach()
                     for key, val in self.inputs.items()}
-                
-            return inputs
+            syl_structure = self.syl_structure[idx]
+            
+            return inputs, syl_structure
         else:
             return self.inputs[idx]
         
@@ -118,7 +120,7 @@ class Dataloader(pl.LightningDataModule):
             
             val_inputs = self.tokenizing(val_x, train=True)
 
-            return (train_inputs, val_inputs)
+            return (train_inputs, list(train_x['gen_lyrics'])), (val_inputs, list(valid_x['gen_lyrics']))
         
         else:
             # x = DC.process(x)

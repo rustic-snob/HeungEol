@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 import numpy as np
 import torch.nn.functional as F
 import pytorch_lightning as pl
@@ -16,7 +17,6 @@ class Model(pl.LightningModule):
         self.LM = LM                            # Language Model
         self.tokenizer = tokenizer              # Tokenizer
         
-        self.loss_func = torch.nn.CrossEntropyLoss()
         self.optim = torch.optim.AdamW
         
 
@@ -30,13 +30,48 @@ class Model(pl.LightningModule):
         return outputs
 
     def training_step(self, batch, batch_idx):
-        x = batch
+        x, structures = batch
         outputs = self(
             input_ids=x['input_ids'],
             attention_mask=x['attention_mask'],
             labels=x['labels']
         )
-        loss = outputs['loss']
+        base_loss = outputs['loss']
+        
+        pred_logits = outputs['logits']
+        labels = x['labels']
+        
+        if self.CFG['train']['align_loss']:
+            
+            structures = [list(map(int, structure.split(' / '))) for structure in structures]
+            
+            individual_losses = self._compute_individual_loss(pred_logits, labels)
+
+            align_loss = torch.tensor(0.0)
+            
+            aligned = 0
+            
+            for idx, gt_structure in enumerate(structures):
+                 
+                all_new_tokens = outputs['logits'][idx][labels[idx].tolist().count(-100)-1:-1].argmax(dim=-1)
+                cur_output_tokens = all_new_tokens[all_new_tokens != 2]
+                
+                pred_structure = self._compute_output_structure(self.tokenizer.decode(cur_output_tokens))
+                
+                align_info = self._compute_align_loss(gt_structure, pred_structure, individual_losses[idx])
+                
+                align_loss += align_info[1]  / self.CFG['train']['batch_size']
+                
+                aligned += align_info[0]
+                
+            loss = base_loss + align_loss
+            
+            self.log("aligned", aligned / self.CFG['train']['batch_size'])            
+            self.log("base_loss", base_loss)
+            self.log("align_loss", align_loss)
+            
+        else:
+            loss = base_loss
         
         self.log("train_loss", loss)
 
@@ -45,7 +80,7 @@ class Model(pl.LightningModule):
     # 이하 데이터셋 구축 이후 상세 구현 예정
 
     def validation_step(self, batch, batch_idx):
-        x = batch
+        x, _ = batch
         outputs = self(
             input_ids=x['input_ids'],
             attention_mask=x['attention_mask'],
@@ -66,7 +101,6 @@ class Model(pl.LightningModule):
 
     def predict_step(self, batch, batch_idx):
         x = batch
-        breakpoint()
         gened_list = []
         with torch.no_grad():
             for i in x:      
@@ -78,18 +112,39 @@ class Model(pl.LightningModule):
                 gened_list.append(self.tokenizer.decode(gened[0]))
             
         return gened_list
+        
+    def _compute_individual_loss(self, logits, labels):
+        labels = labels.to(logits.device)
+        
+        shift_logits = logits[:, :-1, :].contiguous()
+        shift_labels = labels[:, 1:].contiguous()
+        
+        loss_fct = nn.CrossEntropyLoss(reduction='none')
+        
+        individual_token_losses = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+        
+        individual_losses = torch.tensor([x.sum() /(label!=-100).sum() for x, label in zip(individual_token_losses.view_as(shift_labels), shift_labels)])
+        
+        return individual_losses
 
-    def confusion_matrix_inference(self, x):
-        outputs = self(
-            input_ids=x['input_ids'].to('cuda'),
-            attention_mask=x['attention_mask'].to('cuda'),
-            token_type_ids=x['token_type_ids'].to('cuda')
-        )
-        probs = F.softmax(outputs['logits'], dim=-1)
-        preds = np.argmax(probs.cpu().detach().numpy(), axis=-1)
-
-        return preds, probs.tolist()
-
+    def _compute_output_structure(self, output):
+        chunks = output.split('/') 
+        return [len(chunk.replace(' ', '')) for chunk in chunks]
+    
+    def _compute_align_loss(self, desired_structure, output_structure, base_loss_value):
+        
+        scale = self.CFG['train']['align_loss_scale']
+        
+        desired = torch.tensor(desired_structure, dtype=torch.float32)
+        output = torch.tensor(output_structure, dtype=torch.float32)
+        
+        if len(desired) != len(output):
+            return (0, base_loss_value * scale)
+        
+        # If lengths match, compute MSE loss
+        loss = torch.nn.functional.mse_loss(desired, output) * self.global_step / 5000
+        return (1, loss)
+    
     def configure_optimizers(self):
         optimizer = self.optim(self.parameters(), lr=self.CFG['train']['LR']['lr'])
 

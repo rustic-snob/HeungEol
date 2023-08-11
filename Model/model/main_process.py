@@ -7,7 +7,7 @@ import pytorch_lightning as pl
 import wandb
 
 from tqdm.auto import tqdm
-from tag_models.models import Model
+from llm_model.models import Model
 from utils import utils, data_controller
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from pytorch_lightning.loggers import WandbLogger

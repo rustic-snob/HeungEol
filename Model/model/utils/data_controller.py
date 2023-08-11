@@ -120,7 +120,7 @@ class Dataloader(pl.LightningDataModule):
             
             val_inputs = self.tokenizing(val_x, train=True)
 
-            return (train_inputs, list(train_x['gen_lyrics'])), (val_inputs, list(valid_x['gen_lyrics']))
+            return (train_inputs, list(train_x['gen_notes'])), (val_inputs, list(val_x['gen_notes']))
         
         else:
             # x = DC.process(x)

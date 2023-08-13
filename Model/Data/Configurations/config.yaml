@@ -1,0 +1,6 @@
+data_name: 'HeungEol_Dataset_v1.0.csv'
+chunk_len: [30, 45, 60]
+threshold: 10
+long_prob: 0.9
+use_whole: True
+use_line: True

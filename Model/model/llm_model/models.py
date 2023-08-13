@@ -44,8 +44,6 @@ class Model(pl.LightningModule):
         if self.CFG['train']['align_loss']:
             
             structures = [list(map(int, structure.split(' / '))) for structure in structures]
-            
-            individual_losses = self._compute_individual_loss(pred_logits, labels)
 
             align_loss = torch.tensor(0.0)
             
@@ -58,7 +56,7 @@ class Model(pl.LightningModule):
                 
                 pred_structure = self._compute_output_structure(self.tokenizer.decode(cur_output_tokens))
                 
-                align_info = self._compute_align_loss(gt_structure, pred_structure, individual_losses[idx])
+                align_info = self._compute_align_loss(gt_structure, pred_structure)
                 
                 align_loss += align_info[1]  / self.CFG['train']['batch_size']
                 
@@ -131,21 +129,36 @@ class Model(pl.LightningModule):
         chunks = output.split('/') 
         return [len(chunk.replace(' ', '')) for chunk in chunks]
     
-    def _compute_align_loss(self, desired_structure, output_structure, base_loss_value):
+    def _compute_align_loss(self, desired_structure, output_structure):
+        
+        flag = True
         
         scale = self.CFG['train']['align_loss_scale']
         
         desired = torch.tensor(desired_structure, dtype=torch.float32)
         output = torch.tensor(output_structure, dtype=torch.float32)
         
-        if len(desired) != len(output):
-            return (0, base_loss_value * scale)
+        # If under_generated, it is equivalent to generate 0 syllable for gt k syllables 
+        if len(desired) < len(output):
+            # stack 0 to the desired tensor to have the same length with output
+            padding = torch.zeros(len(output) - len(desired), dtype=torch.float32, device=self.device)
+            desired = torch.cat((desired, padding))
+            
+            flag = False
         
+        # If over_generated, it is equivalent to generate k syllables for gt 0 syllables    
+        elif len(output) < len(desired):
+            # stack 0 to the output tensor to have the same length with desired
+            padding = torch.zeros(len(desired) - len(output), dtype=torch.float32, device=self.device)
+            output = torch.cat((output, padding))
+            
+            flag = False
+            
         # If lengths match, compute MSE loss
-        loss = torch.nn.functional.mse_loss(desired, output) * self.global_step / 5000
-        return (1, loss)
+        loss = torch.nn.functional.mse_loss(desired, output) * scale
+        return (flag, loss)
     
-    def configure_optimizers(self):
+    def configure_optimizers(self): 
         optimizer = self.optim(self.parameters(), lr=self.CFG['train']['LR']['lr'])
 
         if self.CFG['train']['LR']['name'] == 'LambdaLR':

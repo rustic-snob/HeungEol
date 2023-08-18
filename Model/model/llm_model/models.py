@@ -37,7 +37,6 @@ class Model(pl.LightningModule):
             labels=x['labels']
         )
         base_loss = outputs['loss']
-        
         pred_logits = outputs['logits']
         labels = x['labels']
         
@@ -45,7 +44,7 @@ class Model(pl.LightningModule):
             
             structures = [list(map(int, structure.split(' / '))) for structure in structures]
 
-            align_loss = torch.tensor(0.0)
+            align_loss = torch.tensor(0.0, device=self.device)
             
             aligned = 0
             
@@ -135,8 +134,8 @@ class Model(pl.LightningModule):
         
         scale = self.CFG['train']['align_loss_scale']
         
-        desired = torch.tensor(desired_structure, dtype=torch.float32)
-        output = torch.tensor(output_structure, dtype=torch.float32)
+        desired = torch.tensor(desired_structure, dtype=torch.float32, device=self.device)
+        output = torch.tensor(output_structure, dtype=torch.float32, device=self.device)
         
         # If under_generated, it is equivalent to generate 0 syllable for gt k syllables 
         if len(desired) < len(output):
@@ -157,6 +156,34 @@ class Model(pl.LightningModule):
         # If lengths match, compute MSE loss
         loss = torch.nn.functional.mse_loss(desired, output) * scale
         return (flag, loss)
+    def _compute_better_align_loss(logits, labels, slash_token_id, penalty=1.0):
+        """
+        Compute a penalty based on misaligned ' / ' and syllables.
+
+        Args:
+        - logits (torch.Tensor): The logits from the model.
+        - labels (torch.Tensor): The ground truth labels.
+        - slash_token_id (int): The token ID corresponding to ' / '.
+        - penalty (float): The penalty to apply for each misalignment.
+
+        Returns:
+        - torch.Tensor: The computed penalty.
+        """
+
+        # Get the predicted tokens from logits
+        pred_tokens = logits.argmax(dim=-1)
+
+        # Create masks
+        pred_slash_mask = (pred_tokens == slash_token_id)
+        gt_slash_mask = (labels == slash_token_id)
+
+        # Find misalignments
+        misalignments = pred_slash_mask ^ gt_slash_mask
+
+        # Compute the penalty
+        misalignment_penalty = misalignments.float().sum() * penalty
+
+        return misalignment_penalty
     
     def configure_optimizers(self): 
         optimizer = self.optim(self.parameters(), lr=self.CFG['train']['LR']['lr'])

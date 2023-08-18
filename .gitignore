@@ -1,2 +1,6 @@
 Model/Data/Dataset/*
 Model/Data/*.ipynb
+Model/model/results/
+Model/model/config/use_config.yaml
+
+__pycache__

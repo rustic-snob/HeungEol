@@ -32,7 +32,9 @@ df['제목'] = df['제목'].apply(first_word_space_sequence)
 df['가사'] = df['가사'].str.split('\n')
 df['가사'] = df['가사'].apply(lambda x: [item for item in x if not re.search('[a-zA-Z]', item)])
 
-df.dropna(inplace = True)
+df.dropna(inplace=True)
+df.reset_index(drop=True, inplace=True)
+
 # If use_line == True: every new line is sample, every space is unit
 if CFG['use_line']:
     
@@ -91,21 +93,27 @@ all_lyrics, all_notes = [], []
 
 for chunk_len in CFG['chunk_len']:
     chunked_lyrics, chunked_notes = zip(*df['가사'].apply(lambda x: process_sample(x, chunk_len)))
-    all_lyrics.extend(chunked_lyrics)
-    all_notes.extend(chunked_notes)
+    all_lyrics.append(chunked_lyrics)
+    all_notes.append(chunked_notes)
 
-# Create new dataframe with paired 'gen_lyrics' and 'gen_notes' while preserving other columns
-new_rows = []
-for idx, row in df.iterrows():
-    lyrics_list = all_lyrics[idx]
-    notes_list = all_notes[idx]
-    for l, n in zip(lyrics_list, notes_list):
-        new_row = row.to_dict()  # Convert the row to a dictionary to preserve all columns
-        new_row['gen_lyrics'] = l
-        new_row['gen_notes'] = n
-        new_rows.append(new_row)
+# Create an empty DataFrame with the same columns as df
+new_df = pd.DataFrame(columns=df.columns)
+new_df['gen_lyrics'] = None
+new_df['gen_notes'] = None
 
-new_df = pd.DataFrame(new_rows).reset_index(drop=True)
+all_rows = []
+
+for idx, row in tqdm(df.iterrows()):
+    lyrics_lists = [lst[idx] for lst in all_lyrics]
+    notes_lists = [lst[idx] for lst in all_notes]
+    for lyrics_list, notes_list in zip(lyrics_lists, notes_lists):
+        for l, n in zip(lyrics_list, notes_list):
+            new_row = row.copy()
+            new_row['gen_lyrics'] = l
+            new_row['gen_notes'] = n
+            all_rows.append(new_row)
+
+new_df = pd.DataFrame(all_rows)
 
 final_df = pd.concat([new_df, df_use_line, df_use_whole], ignore_index=True)
 

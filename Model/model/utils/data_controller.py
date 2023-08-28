@@ -68,12 +68,20 @@ class Dataloader(pl.LightningDataModule):
         x['freq'] = [len(self.tokenizer(text)['input_ids']) for text in tqdm(x.gen_lyrics)]
         x = x[x['freq'] <= 300]
         
-        instruction = "다음 조건에 어울리는 가사를 생성하시오. 주어진 음절 수를 절대 벗어나지 말 것. 제목과 장르에 어울려야 할 것. 생성 형식은 [가사 / 가사 / 가사 / 가사]와 같음."
+        if not self.CFG['induce_align']:
+            instruction = "다음 조건에 어울리는 가사를 생성하시오. 주어진 음절 수를 절대 벗어나지 말 것. 제목과 장르에 어울려야 할 것. 생성 형식은 [가사 / 가사 / 가사 / 가사]와 같음."
+            
+        else:
+            instruction = "다음 조건에 어울리는 가사를 생성하시오. 주어진 음절 수를 절대 벗어나지 말 것. 제목과 장르에 어울려야 할 것. 생성 형식은 [(음절)가사 / (음절)가사 / (음절)가사 / (음절)가사]와 같음."
+            
         x['instruction'] = instruction
         
         prompts_list = [f"### Instruction(명령어):\n{row['instruction']}\n\n### Input(입력):\n음절 수는 [{row['gen_notes']}], 제목은 [{row['제목']}], 장르는 [{row['장르']}]이다.\n\n### Response(응답): \n" for _ , row in x.iterrows()]
             
         if train:
+            if self.CFG['induce_align']:
+                x['gen_lyrics'] = x['gen_lyrics'].apply(lambda elem: ' / '.join(['(' + str(len(e.replace(' ',''))) + ')' + e for e in elem.split(' / ')]))
+                
             answers_list = [f"{row['gen_lyrics']}" for _ , row in x.iterrows()]
             
             inputs = self.tokenizer(
@@ -88,6 +96,7 @@ class Dataloader(pl.LightningDataModule):
             
             labels = [[-100] * (x.tolist().index(1)) + inputs['input_ids'][idx][x.tolist().index(1):].tolist() for idx, x in tqdm(enumerate(inputs['token_type_ids']))]
             inputs['labels'] = torch.tensor(labels)
+            inputs['starting_output'] = [x.tolist().index(1) for x in inputs['token_type_ids']]
             
             return inputs
 

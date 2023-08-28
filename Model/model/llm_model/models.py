@@ -37,40 +37,49 @@ class Model(pl.LightningModule):
             labels=x['labels']
         )
         base_loss = outputs['loss']
-        
-        pred_logits = outputs['logits']
+        logits = outputs['logits']
         labels = x['labels']
+        starting_output = x['starting_output']
         
         if self.CFG['train']['align_loss']:
             
             structures = [list(map(int, structure.split(' / '))) for structure in structures]
-
-            align_loss = torch.tensor(0.0)
-            
+            align_loss = torch.tensor(0.0, device=self.device)
             aligned = 0
             
             for idx, gt_structure in enumerate(structures):
                  
-                all_new_tokens = outputs['logits'][idx][labels[idx].tolist().count(-100)-1:-1].argmax(dim=-1)
-                cur_output_tokens = all_new_tokens[all_new_tokens != 2]
-                
+                all_new_tokens = logits[idx][labels[idx].tolist().count(-100)-1:-1].argmax(dim=-1)
+                cur_output_tokens = all_new_tokens[all_new_tokens != self.tokenizer.pad_token_id]
+
                 pred_structure = self._compute_output_structure(self.tokenizer.decode(cur_output_tokens))
-                
                 align_info = self._compute_align_loss(gt_structure, pred_structure)
                 
                 align_loss += align_info[1]  / self.CFG['train']['batch_size']
-                
                 aligned += align_info[0]
                 
             loss = base_loss + align_loss
-            
-            self.log("aligned", aligned / self.CFG['train']['batch_size'])            
-            self.log("base_loss", base_loss)
+                  
             self.log("align_loss", align_loss)
+            
+        elif self.CFG['train']['better_align_loss']:
+            better_align_loss = self._compute_better_align_loss(logits[:,:-1,:], labels[:,1])
+            
+            loss = base_loss + better_align_loss
+            
+            self.log("better_align_loss", better_align_loss)
             
         else:
             loss = base_loss
         
+        if self.CFG['train']['repeat_penalty']:
+            ul_loss = self._unlikelihood_loss(logits[:,:-1,:], labels[:,1], starting_output)
+            
+            loss += ul_loss
+            
+            self.log("ul_loss", ul_loss)
+
+        self.log("base_loss", base_loss)
         self.log("train_loss", loss)
 
         return loss
@@ -135,8 +144,8 @@ class Model(pl.LightningModule):
         
         scale = self.CFG['train']['align_loss_scale']
         
-        desired = torch.tensor(desired_structure, dtype=torch.float32)
-        output = torch.tensor(output_structure, dtype=torch.float32)
+        desired = torch.tensor(desired_structure, dtype=torch.float32, device=self.device)
+        output = torch.tensor(output_structure, dtype=torch.float32, device=self.device)
         
         # If under_generated, it is equivalent to generate 0 syllable for gt k syllables 
         if len(desired) < len(output):
@@ -157,6 +166,105 @@ class Model(pl.LightningModule):
         # If lengths match, compute MSE loss
         loss = torch.nn.functional.mse_loss(desired, output) * scale
         return (flag, loss)
+
+    def _compute_better_align_loss(self, logits, labels):
+        """
+        Compute a penalty based on misaligned ' / ' and syllables.
+
+        Args:
+        - logits (torch.Tensor): The logits from the model.                         (bsz, seq_len-1, vocab_size)
+        - labels (torch.Tensor): The ground truth labels.                           (bsz, seq_len-1)
+        - scale (float): The penalty's scale to apply for each misalignment.
+
+        Returns:
+        - torch.Tensor: The computed penalty.
+        """
+        
+        # Get slash token id set
+        slash_tokens = ['/', ' /', ' / ', '/ ']
+        
+        slash_token_ids = set([self.tokenizer.encode(token, add_special_tokens=False)[0] for token in slash_tokens if len(self.tokenizer.encode(token, add_special_tokens=False)) == 1])
+        
+        # Get the predicted tokens from logits
+        pred_tokens = logits.argmax(dim=-1)                                              # (bsz,seq_len-1)
+
+        pred_slash_mask = gt_slash_mask = torch.zeros_like(labels, dtype=torch.float32)  # (bsz,seq_len-1)
+        
+        # Create masks
+        for slash_token_id in slash_token_ids:
+            pred_slash_mask |= (pred_tokens == slash_token_id)
+            gt_slash_mask |= (labels == slash_token_id)
+
+        # Find misalignments
+        misalignments = (pred_slash_mask ^ gt_slash_mask) & (labels != -100)
+
+        # Compute the penalty
+        misalignment_penalty = misalignments.float().sum() * self.CFG['train']['align_loss_scale']
+
+        return misalignment_penalty
+
+    def _unlikelihood_loss(self, logits, labels, starting_output):
+        """
+        Compute the unlikelihood loss for repetition penalty.
+
+        Args:
+        - logits (torch.Tensor): The logits from the model.                         (bsz, seq_len-1, vocab_size)
+        - labels (torch.Tensor): The ground truth labels.                           (bsz, seq_len-1)
+        - starting_output (list): position where the output(after prompt) starts.   (bsz,)
+
+        Returns:
+        - torch.Tensor: The computed unlikelihood loss.
+        """
+        
+        # Get the predicted probabilities from logits
+        probs = torch.nn.functional.softmax(logits, dim=-1)
+        
+        # Compute the binary mask M indicating the start of each phrase in the sequence
+        slash_tokens = ['/', ' /', ' / ', '/ ']
+        slash_token_ids = set([self.tokenizer.encode(token, add_special_tokens=False)[0] for token in slash_tokens if len(self.tokenizer.encode(token, add_special_tokens=False)) == 1])
+        
+        
+        M = torch.zeros_like(labels, dtype=torch.float32)               # (bsz, seq_len-1)
+        for slash_token_id in slash_token_ids:
+            M |= (labels == slash_token_id)
+            
+        M = torch.roll(M, shifts=1, dims=1)
+        M[:, 0] = False
+        
+        ul_loss = 0.0
+        for x in range(M.shape[0]):
+            for y in range(M.shape[1]):
+                if M[x, y] == 1 and labels[x, y] != -100:
+                    Ci = self._compute_Ci(labels[x].tolist(), M[x].tolist(), y, starting_output[x])
+                    for c in Ci:
+                        ul_loss -= torch.log(1 - probs[x, y, c])
+
+        return ul_loss * self.CFG['train']['align_loss_scale']
+
+    def _compute_Ci(self, D, M, i, sp):
+        """
+        Compute the set Ci for the i-th position.
+
+        Args:
+        - D (list): The desired ground truth sequence of tokens.
+        - M (list): A binary mask indicating the start of each phrase in the sequence.
+        - i (int): The position for which we want to compute Ci.
+        - sp (int): starting point of current D
+
+        Returns:
+        - set: The set Ci.
+        """
+        
+        # Identify tokens up to the i-th position that are the start of a new phrase/syllable
+        start_tokens = [D[j] for j in range(sp-1, i) if M[j] == 1]
+        
+        # Convert the list of start tokens to a set to ensure uniqueness
+        Ci = set(start_tokens)
+        
+        # Remove the i-th token from the set
+        Ci.discard(D[i])
+        
+        return Ci
     
     def configure_optimizers(self): 
         optimizer = self.optim(self.parameters(), lr=self.CFG['train']['LR']['lr'])

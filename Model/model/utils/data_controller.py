@@ -96,6 +96,7 @@ class Dataloader(pl.LightningDataModule):
             
             labels = [[-100] * (x.tolist().index(1)) + inputs['input_ids'][idx][x.tolist().index(1):].tolist() for idx, x in tqdm(enumerate(inputs['token_type_ids']))]
             inputs['labels'] = torch.tensor(labels)
+            inputs['starting_output'] = [x.tolist().index(1) for x in inputs['token_type_ids']]
             
             return inputs
 

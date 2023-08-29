@@ -197,9 +197,11 @@ class Model(pl.LightningModule):
 
         # Find misalignments
         misalignments = (pred_slash_mask ^ gt_slash_mask) & (labels != -100)
-
-        # Compute the penalty
-        misalignment_penalty = misalignments.float().sum() * self.CFG['train']['align_loss_scale']
+        
+        # Calculate loss with misalignments mask
+        loss_fct = nn.CrossEntropyLoss()
+        misalignments_label = torch.where(misalignments, labels, torch.tensor(-100, device=labels.device))
+        misalignment_penalty = loss_fct(logits.view(-1, logits.size(-1)), misalignments_label.view(-1))
 
         return misalignment_penalty
 

@@ -63,7 +63,7 @@ class Model(pl.LightningModule):
             self.log("align_loss", align_loss)
             
         elif self.CFG['train']['better_align_loss']:
-            better_align_loss = self._compute_better_align_loss(logits[:,:-1,:], labels[:,1])
+            better_align_loss = self._compute_better_align_loss(logits[:,:-1,:].contiguous(), labels[:,1:].contiguous())
             
             loss = base_loss + better_align_loss
             
@@ -73,7 +73,7 @@ class Model(pl.LightningModule):
             loss = base_loss
         
         if self.CFG['train']['repeat_penalty']:
-            ul_loss = self._unlikelihood_loss(logits[:,:-1,:], labels[:,1], starting_output)
+            ul_loss = self._unlikelihood_loss(logits[:,:-1,:].contiguous(), labels[:,1:].contiguous(), starting_output)
             
             loss += ul_loss
             
@@ -174,7 +174,6 @@ class Model(pl.LightningModule):
         Args:
         - logits (torch.Tensor): The logits from the model.                         (bsz, seq_len-1, vocab_size)
         - labels (torch.Tensor): The ground truth labels.                           (bsz, seq_len-1)
-        - scale (float): The penalty's scale to apply for each misalignment.
 
         Returns:
         - torch.Tensor: The computed penalty.
@@ -188,7 +187,8 @@ class Model(pl.LightningModule):
         # Get the predicted tokens from logits
         pred_tokens = logits.argmax(dim=-1)                                              # (bsz,seq_len-1)
 
-        pred_slash_mask = gt_slash_mask = torch.zeros_like(labels, dtype=torch.float32)  # (bsz,seq_len-1)
+        pred_slash_mask = torch.zeros_like(labels, dtype=torch.bool)  # (bsz,seq_len-1)
+        gt_slash_mask = torch.zeros_like(labels, dtype=torch.bool)  # (bsz,seq_len-1)
         
         # Create masks
         for slash_token_id in slash_token_ids:
@@ -217,7 +217,7 @@ class Model(pl.LightningModule):
         Returns:
         - torch.Tensor: The computed unlikelihood loss.
         """
-        
+
         # Get the predicted probabilities from logits
         probs = torch.nn.functional.softmax(logits, dim=-1)
         
@@ -226,14 +226,14 @@ class Model(pl.LightningModule):
         slash_token_ids = set([self.tokenizer.encode(token, add_special_tokens=False)[0] for token in slash_tokens if len(self.tokenizer.encode(token, add_special_tokens=False)) == 1])
         
         
-        M = torch.zeros_like(labels, dtype=torch.float32)               # (bsz, seq_len-1)
+        M = torch.zeros_like(labels, dtype=torch.bool)               # (bsz, seq_len-1)
         for slash_token_id in slash_token_ids:
             M |= (labels == slash_token_id)
             
         M = torch.roll(M, shifts=1, dims=1)
         M[:, 0] = False
         
-        ul_loss = 0.0
+        ul_loss = torch.tensor(0.0, device=self.LM.device)
         for x in range(M.shape[0]):
             for y in range(M.shape[1]):
                 if M[x, y] == 1 and labels[x, y] != -100:
@@ -256,9 +256,9 @@ class Model(pl.LightningModule):
         Returns:
         - set: The set Ci.
         """
-        
+
         # Identify tokens up to the i-th position that are the start of a new phrase/syllable
-        start_tokens = [D[j] for j in range(sp-1, i) if M[j] == 1]
+        start_tokens = [D[j] for j in range(int(sp.item()-1), i) if M[j] == 1]
         
         # Convert the list of start tokens to a set to ensure uniqueness
         Ci = set(start_tokens)
